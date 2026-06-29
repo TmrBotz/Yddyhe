@@ -4,6 +4,7 @@ const cors = require('cors');
 const hubdriveRouter = require('./routes/hubdrive');
 const gadgetswebRouter = require('./routes/gadgetsweb');
 const hubcdnRouter = require('./routes/hubcdn');
+const hdhub4u = require('./routes/hdhub4u');
 
 
 const app = express();
@@ -16,6 +17,7 @@ app.use(express.json());
 app.use('/api/hubdrive', hubdriveRouter);
 app.use('/api/gadgetsweb', gadgetswebRouter);
 app.use('/api/hubcdn', hubcdnRouter);
+app.use('/api/hdhub4u', hdhub4u);
 
 // Health check
 app.get('/api/health', (req, res) => {
