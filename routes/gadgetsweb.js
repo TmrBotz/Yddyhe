@@ -1,113 +1,40 @@
-// gadgetsweb.js - Complete GadgetsWeb scraper with multi-level redirect handling
+// routes/gadgetsweb.js
 const express = require('express');
 const axios = require('axios');
-const cheerio = require('cheerio');
 
 const router = express.Router();
 
-function extractRedirectUrl(html) {
-  let match = html.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/);
-  if (match) return match[1];
-  
-  match = html.match(/setTimeout\s*\(\s*\(\)\s*=>\s*\{?\s*window\.location\.href\s*=\s*['"]([^'"]+)['"]/);
-  if (match) return match[1];
-  
-  match = html.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
-  if (match) return match[1];
-  
-  match = html.match(/<meta\s+http-equiv=["']refresh["']\s+content=["']\d+;\s*url=([^'"]+)["']/i);
-  if (match) return match[1];
-  
-  match = html.match(/<a\s+[^>]*href=['"]([^'"]+)['"][^>]*>.*?(?:Download|Link|Click here).*?<\/a>/i);
-  if (match) return match[1];
-  
-  return null;
+// ROT13 decode
+function rot13(str) {
+  return str.replace(/[a-zA-Z]/g, c =>
+    String.fromCharCode(
+      (c <= 'Z' ? 90 : 122) >= (c = c.charCodeAt(0) + 13) ? c : c - 26
+    )
+  );
 }
 
-async function fetchWithRedirects(url, depth = 0, visited = new Set(), chain = []) {
-  const MAX_DEPTH = 10;
-  
-  if (depth > MAX_DEPTH) throw new Error('Too many redirects (max 10)');
-  if (visited.has(url)) throw new Error(`Redirect loop detected: ${url}`);
-  
-  visited.add(url);
-  chain.push(url);
-  console.log(`[Fetch] Depth ${depth}: ${url}`);
-  
-  try {
-    const response = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Cache-Control': 'max-age=0'
-      },
-      timeout: 30000,
-      maxRedirects: 0,
-      validateStatus: (status) => status >= 200 && status < 500
-    });
-
-    // HTTP 3xx redirect
-    if (response.status >= 300 && response.status < 400) {
-      const loc = response.headers.location;
-      if (loc) {
-        const absoluteUrl = loc.startsWith('http') ? loc : new URL(loc, url).href;
-        console.log(`[Fetch] HTTP redirect to: ${absoluteUrl}`);
-        return await fetchWithRedirects(absoluteUrl, depth + 1, visited, chain);
-      }
-    }
-
-    const html = response.data;
-
-    // JS redirect
-    const jsRedirect = extractRedirectUrl(html);
-    if (jsRedirect && (html.includes('Redirecting') || html.includes('window.location') || html.includes('location.href'))) {
-      const absoluteUrl = jsRedirect.startsWith('http') ? jsRedirect : new URL(jsRedirect, url).href;
-      console.log(`[Fetch] JS redirect to: ${absoluteUrl}`);
-      return await fetchWithRedirects(absoluteUrl, depth + 1, visited, chain);
-    }
-
-    // Cheerio link scan
-    const $ = cheerio.load(html);
-    let finalLink = null;
-
-    $('a[href*="hblinks.co"], a[href*="download"], a[href*="link"]').each((i, el) => {
-      const href = $(el).attr('href');
-      const text = $(el).text().toLowerCase();
-      if (href &&
-          !href.includes('gadgetsweb.xyz') &&
-          !href.includes('greenmountmotors.com') &&
-          !href.includes('javascript:') &&
-          (text.includes('download') || text.includes('link') || text.includes('click') || href.includes('hblinks.co'))) {
-        finalLink = href;
-        return false;
-      }
-    });
-
-    if (finalLink) {
-      const absoluteUrl = finalLink.startsWith('http') ? finalLink : new URL(finalLink, url).href;
-      console.log(`[Fetch] Found final link: ${absoluteUrl}`);
-      return await fetchWithRedirects(absoluteUrl, depth + 1, visited, chain);
-    }
-
-    // Attach chain + final URL to response object
-    response._finalUrl = url;
-    response._chain = chain;
-    return response;
-
-  } catch (error) {
-    console.error(`[Fetch] Error: ${error.message}`);
-    throw error;
-  }
+// Full decode chain: atob → atob → rot13 → atob → JSON.parse
+function decodeStorageValue(encoded) {
+  const d1 = Buffer.from(encoded, 'base64').toString('utf8');
+  const d2 = Buffer.from(d1, 'base64').toString('utf8');
+  const d3 = rot13(d2);
+  const d4 = Buffer.from(d3, 'base64').toString('utf8');
+  return JSON.parse(d4);
 }
+
+const HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Connection': 'keep-alive',
+  'Upgrade-Insecure-Requests': '1',
+  'Cache-Control': 'max-age=0'
+};
 
 router.get('/', async (req, res) => {
-  const gadgetswebUrl = req.query.url;
+  const inputUrl = req.query.url;
 
-  if (!gadgetswebUrl) {
+  if (!inputUrl) {
     return res.status(400).json({
       success: false,
       error: "Missing 'url' parameter",
@@ -116,100 +43,60 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    console.log(`[GadgetsWeb] Starting fetch: ${gadgetswebUrl}`);
-    const response = await fetchWithRedirects(gadgetswebUrl);
-    const html = response.data;
-    const finalUrl = response._finalUrl || gadgetswebUrl;
-    const chain = response._chain || [];
+    // Step 1: Fetch gadgetsweb.xyz page
+    console.log(`[GadgetsWeb] Step 1: Fetching ${inputUrl}`);
 
-    console.log(`[GadgetsWeb] Final URL: ${finalUrl}`);
-    const $ = cheerio.load(html);
-
-    // File info extraction
-    let fileName = $('title').text().trim() || 'Unknown File';
-    let fileSize = '';
-    let fileType = '';
-    let shareDate = '';
-
-    $('h1, h2, h3, .title, .post-title, .entry-title').each((i, el) => {
-      const text = $(el).text().trim();
-      if (text && text.length > 5) { fileName = text; return false; }
+    const gadgetswebRes = await axios.get(inputUrl, {
+      headers: { ...HEADERS, 'Referer': 'https://gadgetsweb.xyz/' },
+      timeout: 30000
     });
 
-    if (fileName === 'Unknown File') {
-      const metaTitle = $('meta[property="og:title"]').attr('content');
-      if (metaTitle) fileName = metaTitle;
+    const html = gadgetswebRes.data;
+
+    // Step 2: Extract localStorage 'o' value from JS
+    // s('o','ENCODED_VALUE',180*1000)
+    const storageMatch = html.match(/s\('o','([^']+)',\s*\d+\s*\*\s*\d+\s*\)/);
+
+    if (!storageMatch) {
+      return res.status(404).json({
+        success: false,
+        error: "Could not extract encoded value from gadgetsweb page"
+      });
     }
 
-    $('li:contains("File Size"), .file-size, [class*="size"], td:contains("File Size"), p:contains("File Size")').each((i, el) => {
-      const sizeMatch = $(el).text().match(/File Size\s*[:]?\s*([\d.]+)\s*(GB|MB|KB)/i);
-      if (sizeMatch) { fileSize = sizeMatch[1] + ' ' + sizeMatch[2]; return false; }
-    });
+    const encodedValue = storageMatch[1];
+    console.log(`[GadgetsWeb] Step 2: Extracted encoded value`);
 
-    $('li:contains("File Type"), .file-type, [class*="type"], td:contains("File Type"), p:contains("File Type")').each((i, el) => {
-      const typeMatch = $(el).text().match(/File Type\s*[:]?\s*(.+)/i);
-      if (typeMatch) { fileType = typeMatch[1].trim(); return false; }
-    });
-
-    $('li:contains("Share Date"), .share-date, [class*="date"], td:contains("Share Date"), p:contains("Share Date")').each((i, el) => {
-      const dateMatch = $(el).text().match(/Share Date\s*[:]?\s*(.+)/i);
-      if (dateMatch) { shareDate = dateMatch[1].trim(); return false; }
-    });
-
-    const downloadLinks = [];
-
-    // Video/Archive direct links
-    $('a[href*=".mkv"], a[href*=".mp4"], a[href*=".avi"], a[href*=".mov"], a[href*=".wmv"], a[href*=".flv"], a[href*=".webm"]').each((i, el) => {
-      const href = $(el).attr('href');
-      if (href && !href.includes('gadgetsweb.xyz') && !href.includes('javascript:')) {
-        downloadLinks.push({ url: href, server: 'Video Download', label: $(el).text().trim() || 'Download Video' });
-      }
-    });
-
-    $('a[href*=".rar"], a[href*=".zip"], a[href*=".7z"], a[href*=".tar"], a[href*=".gz"]').each((i, el) => {
-      const href = $(el).attr('href');
-      if (href && !href.includes('gadgetsweb.xyz') && !href.includes('javascript:')) {
-        downloadLinks.push({ url: href, server: 'Archive Download', label: $(el).text().trim() || 'Download Archive' });
-      }
-    });
-
-    // Download buttons
-    $('a.btn, a[class*="download"], a[class*="button"], a[class*="dl"], a:contains("Download")').each((i, el) => {
-      const href = $(el).attr('href');
-      const text = $(el).text().trim();
-      if (href && !href.includes('gadgetsweb.xyz') && !href.includes('javascript:') && !downloadLinks.some(l => l.url === href)) {
-        downloadLinks.push({ url: href, server: 'Download Button', label: text || 'Download' });
-      }
-    });
-
-    // External links
-    const skipDomains = ['gadgetsweb.xyz', 'greenmountmotors.com', 'javascript:', 'twitter.com', 'facebook.com', 'youtube.com', 'instagram.com', 't.me', 'telegram', 'whatsapp'];
-    $('a[href*="http"]').each((i, el) => {
-      const href = $(el).attr('href');
-      const text = $(el).text().trim();
-      if (href && !skipDomains.some(d => href.includes(d)) && !downloadLinks.some(l => l.url === href) &&
-          (text.toLowerCase().includes('download') || text.toLowerCase().includes('link') || href.includes('hblinks.co') || href.includes('download'))) {
-        downloadLinks.push({ url: href, server: 'External Download', label: text || 'Download Link' });
-      }
-    });
-
-    if (downloadLinks.length === 0 && finalUrl) {
-      downloadLinks.push({ url: finalUrl, server: 'Final Page', label: fileName || 'Link' });
+    // Step 3: Decode the value
+    let decoded;
+    try {
+      decoded = decodeStorageValue(encodedValue);
+    } catch (e) {
+      return res.status(500).json({
+        success: false,
+        error: "Failed to decode storage value: " + e.message
+      });
     }
+
+    console.log(`[GadgetsWeb] Step 3: Decoded JSON:`, decoded);
+
+    // decoded = { w: 10, l: "https://greenmountmotors.com/homelander/", o: "base64_final_url" }
+    if (!decoded.o) {
+      return res.status(404).json({
+        success: false,
+        error: "No final URL found in decoded value"
+      });
+    }
+
+    // Step 4: Decode final URL (one more atob)
+    const finalUrl = Buffer.from(decoded.o, 'base64').toString('utf8');
+    console.log(`[GadgetsWeb] Step 4: Final URL: ${finalUrl}`);
 
     res.json({
       success: true,
-      original_url: gadgetswebUrl,
+      original_url: inputUrl,
       final_url: finalUrl,
-      redirect_chain: chain,
-      file_info: {
-        name: fileName,
-        size: fileSize || 'Unknown Size',
-        type: fileType || 'Unknown Type',
-        share_date: shareDate || 'Unknown Date'
-      },
-      download_links: downloadLinks,
-      total_servers: downloadLinks.length
+      wait_time: decoded.w || 0
     });
 
   } catch (error) {
