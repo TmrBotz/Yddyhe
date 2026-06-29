@@ -3,6 +3,8 @@ const cors = require('cors');
 
 const hubdriveRouter = require('./routes/hubdrive');
 const gadgetswebRouter = require('./routes/gadgetsweb');
+const hubcdnRouter = require('./routes/hubcdn');
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,6 +15,7 @@ app.use(express.json());
 // Routes
 app.use('/api/hubdrive', hubdriveRouter);
 app.use('/api/gadgetsweb', gadgetswebRouter);
+app.use('/api/hubcdn', hubcdnRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
