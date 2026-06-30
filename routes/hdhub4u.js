@@ -1,4 +1,4 @@
-// hdhub4u.js - HDHub4u Movie/Web Series Scraper (Only Main Download Links)
+// hdhub4u.js - HDHub4u Movie/Web Series Scraper (Only Main Container Links)
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -35,7 +35,9 @@ router.get('/', async (req, res) => {
     const html = response.data;
     const $ = cheerio.load(html);
     
-    // Extract movie info
+    // =============================================
+    // EXTRACT MOVIE INFO
+    // =============================================
     const movieInfo = {
       title: $('h1.page-title .material-text').text().trim() || $('title').text().trim(),
       poster: $('img.aligncenter').attr('src') || $('meta[property="og:image"]').attr('content') || '',
@@ -62,37 +64,30 @@ router.get('/', async (req, res) => {
     $('.mod .kno-ecr-pt, .NFQFxe .kno-ecr-pt').each((i, el) => {
       const html = $(el).html();
       if (html) {
-        // Genre
         if (html.includes('Genre:')) {
           const match = html.match(/Genre:\s*([^<]+)/);
           if (match) movieInfo.genre = match[1].trim();
         }
-        // Stars
         if (html.includes('Stars:')) {
           const match = html.match(/Stars:\s*([^<]+)/);
           if (match) movieInfo.stars = match[1].trim();
         }
-        // Director
         if (html.includes('Director:')) {
           const match = html.match(/Director:\s*([^<]+)/);
           if (match) movieInfo.director = match[1].trim();
         }
-        // Creator
         if (html.includes('Creator:')) {
           const match = html.match(/Creator:\s*([^<]+)/);
           if (match) movieInfo.creator = match[1].trim();
         }
-        // Language
         if (html.includes('Language:')) {
           const match = html.match(/Language:\s*([^<]+)/);
           if (match) movieInfo.language = match[1].trim();
         }
-        // Quality
         if (html.includes('Quality:')) {
           const match = html.match(/Quality:\s*([^<]+)/);
           if (match) movieInfo.quality = match[1].trim();
         }
-        // No. of Episodes
         if (html.includes('No. of Episodes:')) {
           const match = html.match(/No\. of Episodes:\s*([^<]+)/);
           if (match) movieInfo.episodes = match[1].trim();
@@ -125,84 +120,119 @@ router.get('/', async (req, res) => {
     });
 
     // =============================================
-    // EXTRACT ONLY MAIN DOWNLOAD LINKS
+    // EXTRACT ONLY MAIN CONTAINER DOWNLOAD LINKS
     // =============================================
     const downloadLinks = [];
     
-    // Get all h3, h4 tags that contain download links
+    // Find the main download container
+    // Look for "DOWNLOAD LINKS" heading and get all links after it
+    let mainContainerFound = false;
+    let skipEpisodes = false;
+    
+    $('h2, h3, h4, h5, .kp-header, .NFQFxe').each((i, el) => {
+      const text = $(el).text().trim();
+      
+      // Check if this is the main download links heading
+      if (text.includes('DOWNLOAD LINKS') || text.includes('Download Links')) {
+        mainContainerFound = true;
+        skipEpisodes = false;
+        console.log('[HDHub4u] Main container found');
+      }
+      
+      // Check if we hit the episode section
+      if (text.includes('Single Episode') || text.includes('Episode Links') || text.includes('EPiSODE')) {
+        skipEpisodes = true;
+        console.log('[HDHub4u] Episode section detected, stopping...');
+        mainContainerFound = false;
+      }
+    });
+
+    // Now extract links only from the main container
+    // Find all anchor tags that are direct children of the main content
     $('h3 a, h4 a, h2 a').each((i, el) => {
       const href = $(el).attr('href');
       const text = $(el).text().trim();
       const parentText = $(el).parent().text().trim();
+      const parentHtml = $(el).parent().html() || '';
       
-      if (href && !href.includes('#') && !href.includes('javascript:')) {
-        // Skip episode links (contain "EPISODE", "EP", "S", "E" pattern)
-        const isEpisode = /EPISODE|EP\s|S\d{1,2}E\d{1,2}/i.test(parentText) || /EPISODE|EP\s|S\d{1,2}E\d{1,2}/i.test(text);
+      // Skip if we're in episode section
+      if (skipEpisodes) {
+        return;
+      }
+      
+      // Skip if no href
+      if (!href || href.includes('#') || href.includes('javascript:')) {
+        return;
+      }
+      
+      // Skip episode links (EPISODE, EP, SxE pattern)
+      const isEpisode = /EPISODE|EP\s|S\d{1,2}E\d{1,2}/i.test(parentText) || 
+                        /EPISODE|EP\s|S\d{1,2}E\d{1,2}/i.test(text);
+      
+      // Skip watch links
+      const isWatch = href.includes('hdstream4u.com') || 
+                      href.includes('hubstream.art') ||
+                      href.includes('watch') ||
+                      href.includes('player');
+      
+      // Skip 4khdhub.one
+      const is4KHub = href.includes('4khdhub.one');
+      
+      // Skip if episode, watch, or 4KHub
+      if (isEpisode || isWatch || is4KHub) {
+        return;
+      }
+      
+      // Only keep links from main download sources
+      if (href.includes('hubdrive.tips') || 
+          href.includes('gadgetsweb.xyz') || 
+          href.includes('hubcdn.sbs')) {
         
-        // Skip watch links (hdstream4u.com, hubstream.art)
-        const isWatch = href.includes('hdstream4u.com') || href.includes('hubstream.art');
-        
-        // Skip 4khdhub.one links
-        const is4KHub = href.includes('4khdhub.one');
-        
-        // Skip if it's an episode, watch link, or 4KHub
-        if (isEpisode || isWatch || is4KHub) {
-          return;
+        // Extract quality
+        let quality = 'Unknown';
+        const qualityMatch = text.match(/(\d+[pP]|4K|HEVC|x264|x265|SAMPLE|HQ|WEB-DL|SDR)/i);
+        if (qualityMatch) {
+          quality = qualityMatch[1];
+        } else {
+          const parentQualityMatch = parentText.match(/(\d+[pP]|4K|HEVC|x264|x265|SDR)/i);
+          if (parentQualityMatch) {
+            quality = parentQualityMatch[1];
+          }
         }
         
-        // Check if it's a download URL (hubdrive, gadgetsweb, hubcdn, etc.)
-        if (href.includes('hubdrive.tips') || 
-            href.includes('gadgetsweb.xyz') || 
-            href.includes('hubcdn.sbs')) {
-          
-          // Extract quality
-          let quality = 'Unknown';
-          const qualityMatch = text.match(/(\d+[pP]|4K|HEVC|x264|x265|SAMPLE|HQ|WEB-DL|SDR)/i);
-          if (qualityMatch) {
-            quality = qualityMatch[1];
-          } else {
-            // Try to extract from parent text
-            const parentQualityMatch = parentText.match(/(\d+[pP]|4K|HEVC|x264|x265|SDR)/i);
-            if (parentQualityMatch) {
-              quality = parentQualityMatch[1];
-            }
+        // Extract size
+        let size = '';
+        const sizeMatch = text.match(/\[([\d.]+(?:GB|MB|KB))\]/);
+        if (sizeMatch) {
+          size = sizeMatch[1];
+        } else {
+          const parentSizeMatch = parentText.match(/\[([\d.]+(?:GB|MB|KB))\]/);
+          if (parentSizeMatch) {
+            size = parentSizeMatch[1];
           }
-          
-          // Extract size
-          let size = '';
-          const sizeMatch = text.match(/\[([\d.]+(?:GB|MB|KB))\]/);
-          if (sizeMatch) {
-            size = sizeMatch[1];
-          } else {
-            // Try to extract from parent text
-            const parentSizeMatch = parentText.match(/\[([\d.]+(?:GB|MB|KB))\]/);
-            if (parentSizeMatch) {
-              size = parentSizeMatch[1];
-            }
-          }
-          
-          // Check if it's a pack
-          const isPack = text.toLowerCase().includes('pack') || parentText.toLowerCase().includes('pack');
-          
-          // Check if it's 4K
-          const is4K = quality.includes('4K') || quality.includes('2160p');
-          
-          downloadLinks.push({
-            url: href,
-            quality: quality,
-            size: size,
-            is_pack: isPack,
-            is_4k: is4K,
-            server: href.includes('hubdrive.tips') ? 'HubDrive' : 
-                    href.includes('gadgetsweb.xyz') ? 'GadgetsWeb' : 
-                    href.includes('hubcdn.sbs') ? 'HubCDN' : 'Other',
-            label: text || 'Download Link'
-          });
         }
+        
+        // Check if pack
+        const isPack = text.toLowerCase().includes('pack') || parentText.toLowerCase().includes('pack');
+        
+        // Check if 4K
+        const is4K = quality.includes('4K') || quality.includes('2160p');
+        
+        downloadLinks.push({
+          url: href,
+          quality: quality,
+          size: size,
+          is_pack: isPack,
+          is_4k: is4K,
+          server: href.includes('hubdrive.tips') ? 'HubDrive' : 
+                  href.includes('gadgetsweb.xyz') ? 'GadgetsWeb' : 
+                  href.includes('hubcdn.sbs') ? 'HubCDN' : 'Other',
+          label: text || 'Download Link'
+        });
       }
     });
 
-    // Remove duplicates based on URL
+    // Remove duplicates
     const uniqueLinks = [];
     const seenUrls = new Set();
     for (const link of downloadLinks) {
@@ -212,7 +242,7 @@ router.get('/', async (req, res) => {
       }
     }
 
-    // Sort links by quality (4K first, then 1080p, 720p, 480p)
+    // Sort by quality
     const qualityOrder = {
       '4K': 0,
       '2160p': 1,
@@ -237,7 +267,7 @@ router.get('/', async (req, res) => {
       });
     }
 
-    // Count packs and individual links
+    // Summary
     const packLinks = uniqueLinks.filter(link => link.is_pack);
     const individualLinks = uniqueLinks.filter(link => !link.is_pack);
 
